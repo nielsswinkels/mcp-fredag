@@ -2,14 +2,18 @@
 """
 MCP Server: Är det fredag?
 A simple MCP server that tells you if it's Friday.
+
+Supports two transport modes:
+  - stdio (default): for Claude Desktop local use
+  - sse: for hosting (Coolify, etc.) — set TRANSPORT=sse
 """
 
 import asyncio
+import os
 import httpx
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from mcp.server import Server
-from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
 
 # Create the MCP server
@@ -67,10 +71,41 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
     return [TextContent(type="text", text=result)]
 
-async def main():
-    """Run the MCP server."""
-    async with stdio_server() as (read_stream, write_stream):
-        await server.run(read_stream, write_stream, server.create_initialization_options())
-
 if __name__ == "__main__":
-    asyncio.run(main())
+    transport = os.environ.get("TRANSPORT", "stdio")
+
+    if transport == "sse":
+        from mcp.server.sse import SseServerTransport
+        from starlette.applications import Starlette
+        from starlette.routing import Route, Mount
+        import uvicorn
+
+        sse = SseServerTransport("/messages/")
+
+        async def handle_sse(request):
+            async with sse.connect_sse(
+                request.scope, request.receive, request._send
+            ) as streams:
+                await server.run(
+                    streams[0], streams[1], server.create_initialization_options()
+                )
+
+        app = Starlette(
+            routes=[
+                Route("/sse", endpoint=handle_sse),
+                Mount("/messages/", app=sse.handle_post_message),
+            ]
+        )
+
+        port = int(os.environ.get("PORT", 8000))
+        uvicorn.run(app, host="0.0.0.0", port=port)
+    else:
+        from mcp.server.stdio import stdio_server
+
+        async def main():
+            async with stdio_server() as (read_stream, write_stream):
+                await server.run(
+                    read_stream, write_stream, server.create_initialization_options()
+                )
+
+        asyncio.run(main())

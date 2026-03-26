@@ -10,9 +10,8 @@ Supports two transport modes:
 
 import asyncio
 import os
+import re
 import httpx
-from datetime import datetime
-from zoneinfo import ZoneInfo
 from mcp.server import Server
 from mcp.types import Tool, TextContent
 
@@ -40,36 +39,23 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     if name != "ar_det_fredag":
         raise ValueError(f"Unknown tool: {name}")
 
-    # Check Swedish time
-    sweden_tz = ZoneInfo("Europe/Stockholm")
-    now = datetime.now(sweden_tz)
-    is_friday = now.weekday() == 4  # Monday = 0, Friday = 4
-
-    # Try to fetch from the actual site for fun
-    site_says = None
+    # Fetch answer from ärdetfredag.se
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             response = await client.get("https://www.xn--rdetfredag-p5a.se/")
-            if response.status_code == 200:
-                html = response.text.upper()
-                if "JA" in html:
-                    site_says = "JA"
-                elif "NEJ" in html:
-                    site_says = "NEJ"
-    except Exception:
-        pass  # Site unreachable, we'll use local calculation
+            response.raise_for_status()
+            match = re.search(
+                r'<div\s+id="content"[^>]*><span>(.*?)</span></div>',
+                response.text,
+            )
+            if match:
+                answer = match.group(1).strip()
+            else:
+                answer = "Kunde inte tolka svaret från ärdetfredag.se"
+    except Exception as e:
+        answer = f"Kunde inte nå ärdetfredag.se: {e}"
 
-    # Build response
-    answer = "JA! 🎉" if is_friday else "NEJ 😢"
-    day_name = now.strftime("%A")
-
-    result = f"Är det fredag? {answer}\n"
-    result += f"(Det är {day_name} i Sverige, {now.strftime('%Y-%m-%d %H:%M')})"
-
-    if site_says:
-        result += f"\n\närdetfredag.se säger också: {site_says}"
-
-    return [TextContent(type="text", text=result)]
+    return [TextContent(type="text", text=answer)]
 
 if __name__ == "__main__":
     transport = os.environ.get("TRANSPORT", "stdio")
